@@ -115,34 +115,41 @@ export function drawBarText(
   ctx.restore();
 }
 
+/** Draws one finch mark as a triangle centered on `center` (AE's `position - anchor`, which is
+ *  where the real shape's own bbox is centered too -- see spec.ts for the derivation) with
+ *  half-extents from `size`, rather than treating `center` as a triangle tip/corner. */
+function drawFinchTriangle(
+  ctx: DrawCtx,
+  center: { x: number; y: number },
+  size: { w: number; h: number },
+  s: number,
+) {
+  const cx = center.x * s;
+  const cy = center.y * s;
+  const hw = (size.w * s) / 2;
+  const hh = (size.h * s) / 2;
+  ctx.beginPath();
+  ctx.moveTo(cx, cy - hh);
+  ctx.lineTo(cx + hw, cy + hh);
+  ctx.lineTo(cx - hw, cy + hh);
+  ctx.closePath();
+  ctx.fill();
+}
+
 function drawFinchMarks(ctx: DrawCtx, layout: BarLayout, opacity: number) {
   const { s } = layout;
   ctx.save();
   ctx.globalAlpha = opacity;
 
-  // Little bird (yellow) -- simple triangle approximation
+  // Little bird (yellow) -- drawn first, so Red Bird (topmost in the real AE layer stack)
+  // correctly paints over most of it, leaving just a sliver visible -- matching the real
+  // composition rather than fully hiding it.
   ctx.fillStyle = spec.LITTLE_BIRD_COLOR;
-  ctx.beginPath();
-  const lb = spec.LITTLE_BIRD_POS;
-  const lbw = spec.LITTLE_BIRD_SIZE.w * s;
-  const lbh = spec.LITTLE_BIRD_SIZE.h * s;
-  ctx.moveTo(lb.x * s, lb.y * s - lbh);
-  ctx.lineTo(lb.x * s + lbw, lb.y * s);
-  ctx.lineTo(lb.x * s, lb.y * s + lbh * 0.3);
-  ctx.closePath();
-  ctx.fill();
+  drawFinchTriangle(ctx, spec.LITTLE_BIRD_CENTER, spec.LITTLE_BIRD_SIZE, s);
 
-  // Red bird -- simple triangle approximation, layered above/right of the little bird
+  // Red bird -- on top, per the AEP's own layer order.
   ctx.fillStyle = spec.RED_BIRD_COLOR;
-  ctx.beginPath();
-  const rb = spec.RED_BIRD_POS;
-  const rbw = spec.RED_BIRD_SIZE.w * s;
-  const rbh = spec.RED_BIRD_SIZE.h * s;
-  ctx.moveTo(rb.x * s, rb.y * s - rbh);
-  ctx.lineTo(rb.x * s + rbw, rb.y * s);
-  ctx.lineTo(rb.x * s, rb.y * s + rbh * 0.3);
-  ctx.closePath();
-  ctx.fill();
+  drawFinchTriangle(ctx, spec.RED_BIRD_CENTER, spec.RED_BIRD_SIZE, s);
 
   ctx.restore();
 }

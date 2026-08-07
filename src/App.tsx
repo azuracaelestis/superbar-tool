@@ -3,7 +3,8 @@ import { computeLayout, type GlyphMetricsSource } from '../shared/layout.js';
 import { drawSuperBar } from '../shared/draw.js';
 import { computeImportedLayout, drawImportedBar, type ImportedArtSpec } from '../shared/ninegrid.js';
 import { sampleBar, defaultBar, type BarInstance, type EasingName } from '../shared/animate.js';
-import ArtworkImport, { type ImportedArtResult } from './import/ArtworkImport.js';
+import { PRESETS } from './presets.js';
+import Timeline from './Timeline.js';
 
 const CJK_PATTERN = /[㐀-鿿豈-﫿぀-ヿ가-힯]/;
 const EASINGS: EasingName[] = ['linear', 'easeOut', 'easeInOut', 'easeOutBack'];
@@ -42,9 +43,9 @@ export default function App() {
   const [exportState, setExportState] = useState<{ progress: number; downloadUrl: string | null; error: string | null } | null>(null);
   const [fontsReady, setFontsReady] = useState(false);
 
-  const [importedArt, setImportedArt] = useState<ImportedArtResult | null>(null);
-  const [importedImage, setImportedImage] = useState<HTMLImageElement | null>(null);
-  const [showImportModal, setShowImportModal] = useState(false);
+  const [presetId, setPresetId] = useState<(typeof PRESETS)[number]['id']>('corporate');
+  const preset = PRESETS.find((p) => p.id === presetId)!;
+  const [presetImage, setPresetImage] = useState<HTMLImageElement | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -53,6 +54,18 @@ export default function App() {
   useEffect(() => {
     ensureFonts().then(() => setFontsReady(true));
   }, []);
+
+  // A preset with baked `art` supplies its own image; the procedural presets (Corporate today)
+  // don't need one.
+  useEffect(() => {
+    if (!preset.art) {
+      setPresetImage(null);
+      return;
+    }
+    const img = new Image();
+    img.onload = () => setPresetImage(img);
+    img.src = preset.art.dataUrl;
+  }, [preset.art]);
 
   // Live preview: redraw the bar over the video every frame, synced to playback time.
   useEffect(() => {
@@ -83,15 +96,15 @@ export default function App() {
       const anim = sampleBar(bar, video.currentTime);
       if (anim) {
         const fontFamily = CJK_PATTERN.test(bar.text) ? 'GenJyuuGothic-Bold' : 'Gotham-Bold';
-        if (importedArt && importedImage) {
+        if (preset.art && presetImage) {
           const art: ImportedArtSpec = {
-            image: importedImage,
-            width: importedArt.width,
-            height: importedArt.height,
-            slices: importedArt.slices,
-            textInsetLeft: importedArt.textInsetLeft,
-            textInsetRight: importedArt.textInsetRight,
-            textBaselineFromTop: importedArt.textBaselineFromTop,
+            image: presetImage,
+            width: preset.art.width,
+            height: preset.art.height,
+            slices: preset.art.slices,
+            textInsetLeft: preset.art.textInsetLeft,
+            textInsetRight: preset.art.textInsetRight,
+            textBaselineFromTop: preset.art.textBaselineFromTop,
           };
           const layout = computeImportedLayout(bar.text, art, upload.width, upload.height, measure, fontFamily);
           drawImportedBar(ctx as any, layout, art, bar.text, anim, fontFamily);
@@ -104,15 +117,7 @@ export default function App() {
     };
     raf = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(raf);
-  }, [upload, bar, fontsReady, importedArt, importedImage]);
-
-  function handleArtImported(art: ImportedArtResult) {
-    setImportedArt(art);
-    setShowImportModal(false);
-    const img = new Image();
-    img.onload = () => setImportedImage(img);
-    img.src = art.dataUrl;
-  }
+  }, [upload, bar, fontsReady, preset.art, presetImage]);
 
   async function handleFile(file: File) {
     const form = new FormData();
@@ -139,17 +144,7 @@ export default function App() {
         easingIn: bar.easingIn,
         easingOut: bar.easingOut,
         format,
-        art: importedArt
-          ? {
-              dataUrl: importedArt.dataUrl,
-              width: importedArt.width,
-              height: importedArt.height,
-              slices: importedArt.slices,
-              textInsetLeft: importedArt.textInsetLeft,
-              textInsetRight: importedArt.textInsetRight,
-              textBaselineFromTop: importedArt.textBaselineFromTop,
-            }
-          : undefined,
+        art: preset.art,
       }),
     });
     const { jobId } = await res.json();
@@ -182,10 +177,21 @@ export default function App() {
             <span className="text-zinc-400">Drop a video here, or click to choose one</span>
           </label>
         ) : (
-          <div className="relative bg-black rounded-xl overflow-hidden">
-            <video ref={videoRef} src={upload.url} controls className="w-full block" />
-            <canvas ref={canvasRef} className="absolute inset-0 w-full h-full pointer-events-none" />
-          </div>
+          <>
+            <div className="relative bg-black rounded-xl overflow-hidden">
+              <video ref={videoRef} src={upload.url} controls className="w-full block" />
+              <canvas ref={canvasRef} className="absolute inset-0 w-full h-full pointer-events-none" />
+            </div>
+            <Timeline
+              durationSec={upload.durationSec}
+              videoRef={videoRef}
+              bar={bar}
+              onScrub={(t) => {
+                if (videoRef.current) videoRef.current.currentTime = t;
+              }}
+              onChangeBar={(patch) => setBar((b) => ({ ...b, ...patch }))}
+            />
+          </>
         )}
       </div>
 
@@ -193,20 +199,25 @@ export default function App() {
         <h1 className="text-lg font-semibold">Super Bar Tool</h1>
 
         <div className="flex flex-col gap-1 text-sm">
-          Background
-          <div className="flex gap-2">
-            <button
-              className={`flex-1 rounded px-2 py-1.5 text-sm ${!importedArt ? 'bg-indigo-600' : 'bg-zinc-800 hover:bg-zinc-700'}`}
-              onClick={() => setImportedArt(null)}
-            >
-              ViewSonic (default)
-            </button>
-            <button
-              className={`flex-1 rounded px-2 py-1.5 text-sm ${importedArt ? 'bg-indigo-600' : 'bg-zinc-800 hover:bg-zinc-700'}`}
-              onClick={() => setShowImportModal(true)}
-            >
-              {importedArt ? 'Custom (change)' : 'Custom artwork...'}
-            </button>
+          Design System
+          <div className="grid grid-cols-2 gap-2">
+            {PRESETS.map((p) => (
+              <button
+                key={p.id}
+                disabled={!p.enabled}
+                onClick={() => setPresetId(p.id)}
+                className={`rounded px-2 py-1.5 text-sm text-left ${
+                  !p.enabled
+                    ? 'bg-zinc-800/50 text-zinc-500 cursor-not-allowed'
+                    : presetId === p.id
+                      ? 'bg-indigo-600'
+                      : 'bg-zinc-800 hover:bg-zinc-700'
+                }`}
+              >
+                {p.label}
+                {!p.enabled && <div className="text-xs text-zinc-500">Coming soon</div>}
+              </button>
+            ))}
           </div>
         </div>
 
@@ -218,29 +229,6 @@ export default function App() {
             onChange={(e) => setBar({ ...bar, text: e.target.value })}
           />
         </label>
-
-        <div className="flex gap-2">
-          <label className="flex flex-col gap-1 text-sm flex-1">
-            In (s)
-            <input
-              type="number"
-              step="0.1"
-              className="bg-zinc-800 rounded px-2 py-1"
-              value={bar.inSec}
-              onChange={(e) => setBar({ ...bar, inSec: Number(e.target.value) })}
-            />
-          </label>
-          <label className="flex flex-col gap-1 text-sm flex-1">
-            Hold (s)
-            <input
-              type="number"
-              step="0.1"
-              className="bg-zinc-800 rounded px-2 py-1"
-              value={bar.holdSec}
-              onChange={(e) => setBar({ ...bar, holdSec: Number(e.target.value) })}
-            />
-          </label>
-        </div>
 
         <div className="flex gap-2">
           <label className="flex flex-col gap-1 text-sm flex-1">
@@ -336,10 +324,6 @@ export default function App() {
           </div>
         )}
       </div>
-
-      {showImportModal && (
-        <ArtworkImport onImported={handleArtImported} onCancel={() => setShowImportModal(false)} />
-      )}
     </div>
   );
 }

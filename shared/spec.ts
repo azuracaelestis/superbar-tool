@@ -50,13 +50,22 @@ export const TEXT_BASELINE_FROM_TOP = 92; // baseline y, relative to BAR_TOP
 export const FONT_FALLBACK_CHAIN = ['Gotham-Bold', 'GenJyuuGothic-Bold', 'DingTalk Sans'];
 
 // --- Finch marks (approximated geometry; refine later via the artwork-import path) -------
+// Centers are `position - anchor` from the AEP, in the comp's own native 1920x1080 space --
+// NOT scaled by `s`-style 1.5x like the bar geometry above (that scaling exists only because
+// the bar's numbers came from measuring a 720p reference render; the birds' numbers came
+// straight from the AEP, whose comp is already 1920x1080). A previous version of this file
+// scaled these by 1.5 anyway, which pushed both birds ~410px too low, and separately drew them
+// at raw `position` instead of the anchor-corrected center -- collapsing their true 31.7-unit
+// separation down to 6.2 units, so Red Bird's triangle (~2x Little Bird's size) fully swallowed
+// it. Both are fixed here: values below are already `position - anchor`, and draw.ts centers
+// each triangle on its own center point rather than treating it as a tip.
 export const RED_BIRD_COLOR = '#DA0025';
-export const RED_BIRD_POS = { x: 305, y: 1232 }; // attach position, comp space
-export const RED_BIRD_SIZE = { w: 155, h: 107 };
+export const RED_BIRD_CENTER = { x: 151.9, y: 785.8 };
+export const RED_BIRD_SIZE = { w: 103.0, h: 71.3 };
 
 export const LITTLE_BIRD_COLOR = '#F7D35E';
-export const LITTLE_BIRD_POS = { x: 299, y: 1240 };
-export const LITTLE_BIRD_SIZE = { w: 71, h: 49 };
+export const LITTLE_BIRD_CENTER = { x: 121.6, y: 776.7 };
+export const LITTLE_BIRD_SIZE = { w: 47.3, h: 32.8 };
 
 // --- The animation, per the AEP's own path keyframes on the right-cap attach x -----------
 // (right edge stepped -445.95 -> -435.59 -> -343.99 -> +194.11 against a pinned left edge at
