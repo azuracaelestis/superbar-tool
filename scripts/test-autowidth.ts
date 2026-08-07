@@ -2,7 +2,7 @@ import { createCanvas, GlobalFonts } from '@napi-rs/canvas';
 import { writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { computeLayout, type GlyphMetricsSource } from '../shared/layout.js';
-import { drawSuperBar } from '../shared/draw.js';
+import { drawSuperBar, DEFAULT_ANIM, type MakeLayer } from '../shared/draw.js';
 
 GlobalFonts.registerFromPath(`${homedir()}/Library/Fonts/Gotham-Bold.otf`, 'Gotham-Bold');
 GlobalFonts.registerFromPath(`${homedir()}/Library/Fonts/GenJyuuGothic-Bold.otf`, 'GenJyuuGothic-Bold');
@@ -27,6 +27,11 @@ const measure: GlyphMetricsSource = {
 
 const OUT_DIR = '/private/tmp/claude-502/-Users-anastasia-cynthia-tanawi/025493ce-2a02-4d22-b1e4-7c32d6c59262/scratchpad';
 
+const makeLayer: MakeLayer = (w, h) => {
+  const layerCanvas = createCanvas(w, h);
+  return { ctx: layerCanvas.getContext('2d') as any, image: layerCanvas };
+};
+
 for (const [i, text] of STRINGS.entries()) {
   const isCJK = /[一-鿿]/.test(text);
   const fontFamily = isCJK ? 'GenJyuuGothic-Bold' : 'Gotham-Bold';
@@ -34,7 +39,7 @@ for (const [i, text] of STRINGS.entries()) {
   ctx.clearRect(0, 0, W, H);
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, W, H);
-  drawSuperBar(ctx as any, layout, text, undefined, fontFamily);
+  drawSuperBar(ctx as any, layout, text, DEFAULT_ANIM, fontFamily, makeLayer);
   // patch font for CJK since drawSuperBar hardcodes spec.TEXT_FONT_FAMILY -- fine for this check,
   // real integration wires font selection through opts (todo, noted below)
   writeFileSync(`${OUT_DIR}/autowidth-${i}.png`, canvas.toBuffer('image/png'));

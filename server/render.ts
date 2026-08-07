@@ -2,7 +2,7 @@ import { createCanvas, GlobalFonts, loadImage } from '@napi-rs/canvas';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { computeLayout, type GlyphMetricsSource } from '../shared/layout.js';
-import { drawSuperBar } from '../shared/draw.js';
+import { drawSuperBar, type MakeLayer } from '../shared/draw.js';
 import { computeImportedLayout, drawImportedBar, type ImportedArtSpec } from '../shared/ninegrid.js';
 import type { ImportedArtPayload } from '../shared/importedArt.js';
 import { sampleBar, type BarInstance } from '../shared/animate.js';
@@ -68,6 +68,10 @@ export async function renderBarFrames(opts: {
     },
   };
   const fontFamily = fontFamilyFor(opts.bar.text);
+  const makeLayer: MakeLayer = (w, h) => {
+    const layerCanvas = createCanvas(w, h);
+    return { ctx: layerCanvas.getContext('2d') as any, image: layerCanvas };
+  };
 
   const importedArt = opts.art ? await loadImportedArt(opts.art) : null;
 
@@ -91,7 +95,7 @@ export async function renderBarFrames(opts: {
       if (importedArt) {
         drawImportedBar(ctx as any, layout as any, importedArt, opts.bar.text, anim, fontFamily);
       } else {
-        drawSuperBar(ctx as any, layout as any, opts.bar.text, anim, fontFamily);
+        drawSuperBar(ctx as any, layout as any, opts.bar.text, anim, fontFamily, makeLayer);
       }
     }
     const framePath = `${opts.outDir}/${opts.bar.id}_${String(f - startFrame).padStart(6, '0')}.png`;

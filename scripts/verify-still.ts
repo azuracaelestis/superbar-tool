@@ -2,7 +2,8 @@ import { createCanvas, loadImage, GlobalFonts } from '@napi-rs/canvas';
 import { writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { computeLayout, type GlyphMetricsSource } from '../shared/layout.js';
-import { drawSuperBar } from '../shared/draw.js';
+import { drawSuperBar, DEFAULT_ANIM, type MakeLayer } from '../shared/draw.js';
+import * as spec from '../shared/spec.js';
 
 const REF =
   '/private/tmp/claude-502/-Users-anastasia-cynthia-tanawi/025493ce-2a02-4d22-b1e4-7c32d6c59262/scratchpad/Cut25 Super (GPU & Performance Fixes.mp4.png';
@@ -28,7 +29,11 @@ const layout = computeLayout(TEXT, W, H, measure);
 console.log('layout:', layout);
 
 // transparent canvas, matching how this composites over real footage
-drawSuperBar(ctx as any, layout, TEXT);
+const makeLayer: MakeLayer = (w, h) => {
+  const layerCanvas = createCanvas(w, h);
+  return { ctx: layerCanvas.getContext('2d') as any, image: layerCanvas };
+};
+drawSuperBar(ctx as any, layout, TEXT, DEFAULT_ANIM, spec.TEXT_FONT_FAMILY, makeLayer);
 
 const outPath = `${OUT_DIR}/verify-still.png`;
 writeFileSync(outPath, canvas.toBuffer('image/png'));

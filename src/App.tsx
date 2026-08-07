@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { computeLayout, type GlyphMetricsSource } from '../shared/layout.js';
-import { drawSuperBar } from '../shared/draw.js';
+import { drawSuperBar, type MakeLayer } from '../shared/draw.js';
 import { computeImportedLayout, drawImportedBar, type ImportedArtSpec } from '../shared/ninegrid.js';
 import { sampleBar, defaultBar, type BarInstance, type EasingName } from '../shared/animate.js';
 import { PRESETS } from './presets.js';
@@ -81,6 +81,13 @@ export default function App() {
       },
     };
 
+    const makeLayer: MakeLayer = (w, h) => {
+      const layerCanvas = document.createElement('canvas');
+      layerCanvas.width = w;
+      layerCanvas.height = h;
+      return { ctx: layerCanvas.getContext('2d') as any, image: layerCanvas };
+    };
+
     const draw = () => {
       const video = videoRef.current;
       const canvas = canvasRef.current;
@@ -110,7 +117,7 @@ export default function App() {
           drawImportedBar(ctx as any, layout, art, bar.text, anim, fontFamily);
         } else {
           const layout = computeLayout(bar.text, upload.width, upload.height, measure, fontFamily);
-          drawSuperBar(ctx as any, layout, bar.text, anim, fontFamily);
+          drawSuperBar(ctx as any, layout, bar.text, anim, fontFamily, makeLayer);
         }
       }
       raf = requestAnimationFrame(draw);
