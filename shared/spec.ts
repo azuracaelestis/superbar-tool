@@ -62,34 +62,51 @@ export const TEXT_BASELINE_FROM_TOP = 92; // baseline y, relative to BAR_TOP
 export const FONT_FALLBACK_CHAIN = ['Gotham-Bold', 'GenJyuuGothic-Bold', 'DingTalk Sans'];
 
 // --- Finch marks -------------------------------------------------------------------------
-// A previous pass derived these from the AEP's own position/anchor math (comp-native
-// 1920x1080, no extra scaling) -- correct in principle, but it still left both marks ~35-50px
-// off from where the real reference render actually shows them, and drew each as a plain
-// 3-point triangle when the reference shows a tapered, rotated lens/kite shape (width rises,
-// plateaus, then falls -- not a monotonic triangle). Both are now measured directly from the
-// reference render's pixels instead: a per-row width-profile scan of each mark, isolating red
-// (R >> G,B) and yellow (R,G >> B) pixels, gives real bounding boxes and four corner points
-// (top / right-bulge / bottom / left-bulge) that are point-symmetric about the mark's own
-// center. Both centers, conveniently, land on clean relationships to the bar's own anchors:
-// Red Bird's bbox-center sits exactly on BAR_TOP; Little Bird's is a fixed offset from
-// (LEFT_ATTACH_X, BAR_TOP). Offsets and vertices are in comp-space (x1.5 from the 720p
-// measurement, matching the bar geometry's own convention), relative to the bar's attach point.
-export const RED_BIRD_COLOR = '#DA0025';
+// Two prior passes approximated these: first as plain triangles, then as a 4-point lens/kite
+// polygon traced from the reference render's pixel width-profile. Both were guesses at a shape
+// neither of us had the source for. The user then supplied the actual artwork --
+// Desktop/little_bird_red.svg and little_bird_yellow.svg -- so these are now the REAL vector
+// paths, not an approximation: each SVG's single <path> was parsed (resolving relative l/c
+// commands to absolute), re-centered on its own path bounding box, and pre-scaled so the
+// rendered size matches the reference video (see RED_BIRD_SCALE/LITTLE_BIRD_SCALE below --
+// tune these, not the path data, if the size needs adjusting). Colors are taken directly from
+// the SVGs' fill values.
+export type FinchPathCmd =
+  | { op: 'M'; x: number; y: number }
+  | { op: 'L'; x: number; y: number }
+  | { op: 'C'; x1: number; y1: number; x2: number; y2: number; x: number; y: number }
+  | { op: 'Z' };
+
+export const RED_BIRD_COLOR = '#DB0025';
 export const RED_BIRD_CENTER_OFFSET = { x: 105.75, y: 0 };
-export const RED_BIRD_VERTICES = [
-  { x: 14.25, y: -43.5 }, // top point
-  { x: 65.25, y: -21 }, // right bulge
-  { x: -11.25, y: 43.5 }, // bottom point
-  { x: -65.25, y: 21 }, // left bulge
+// native path bbox: 235.50 x 175.83, pre-scaled by 0.56 below (from little_bird_red.svg)
+export const RED_BIRD_PATH: FinchPathCmd[] = [
+  { op: 'M', x: 65.26, y: -18.83 },
+  { op: 'L', x: 11.45, y: 36.11 },
+  { op: 'C', x1: 0.85, y1: 46.93, x2: -15.71, y2: 49.23, x: -28.87, y: 41.73 },
+  { op: 'L', x: -64.94, y: 21.15 },
+  { op: 'C', x1: -65.78, y1: 20.67, x2: -65.94, y2: 19.52, x: -65.26, y: 18.83 },
+  { op: 'L', x: -11.45, y: -36.11 },
+  { op: 'C', x1: -0.85, y1: -46.93, x2: 15.71, y2: -49.23, x: 28.87, y: -41.73 },
+  { op: 'L', x: 64.94, y: -21.15 },
+  { op: 'C', x1: 65.78, y1: -20.67, x2: 65.94, y2: -19.52, x: 65.26, y: -18.83 },
+  { op: 'Z' },
 ];
 
-export const LITTLE_BIRD_COLOR = '#F7D35E';
+export const LITTLE_BIRD_COLOR = '#F7D87A';
 export const LITTLE_BIRD_CENTER_OFFSET = { x: 32.25, y: -38.25 };
-export const LITTLE_BIRD_VERTICES = [
-  { x: 6, y: -18.75 },
-  { x: 27.75, y: -9 },
-  { x: -6, y: 18.75 },
-  { x: -27.75, y: 7.5 },
+// native path bbox: 109.39 x 81.67, pre-scaled by 0.52 below (from little_bird_yellow.svg)
+export const LITTLE_BIRD_PATH: FinchPathCmd[] = [
+  { op: 'M', x: 28.14, y: -8.12 },
+  { op: 'L', x: 4.93, y: 15.57 },
+  { op: 'C', x1: 0.36, y1: 20.24, x2: -6.78, y2: 21.23, x: -12.46, y: 17.99 },
+  { op: 'L', x: -28.01, y: 9.12 },
+  { op: 'C', x1: -28.37, y1: 8.92, x2: -28.44, y2: 8.42, x: -28.15, y: 8.12 },
+  { op: 'L', x: -4.94, y: -15.58 },
+  { op: 'C', x1: -0.37, y1: -20.24, x2: 6.78, y2: -21.23, x: 12.45, y: -18.0 },
+  { op: 'L', x: 28.01, y: -9.12 },
+  { op: 'C', x1: 28.37, y1: -8.92, x2: 28.44, y2: -8.42, x: 28.15, y: -8.12 },
+  { op: 'Z' },
 ];
 
 // --- The animation, per the AEP's own path keyframes on the right-cap attach x -----------

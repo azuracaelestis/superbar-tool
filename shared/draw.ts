@@ -10,6 +10,7 @@ export interface DrawCtx {
   beginPath(): void;
   moveTo(x: number, y: number): void;
   lineTo(x: number, y: number): void;
+  bezierCurveTo(cp1x: number, cp1y: number, cp2x: number, cp2y: number, x: number, y: number): void;
   arc(x: number, y: number, radius: number, startAngle: number, endAngle: number, counterclockwise?: boolean): void;
   closePath(): void;
   fill(): void;
@@ -172,27 +173,32 @@ export function drawBarText(
   ctx.restore();
 }
 
-/** Draws one finch mark as a 4-point lens/kite polygon, traced from the reference render's own
- *  per-row width profile (see spec.ts) rather than a plain 3-point triangle. `centerOffset` is
- *  relative to the bar's own attach point (leftAttachX, barTop); `vertices` are relative to the
- *  mark's own center, both in comp-space, scaled by `s` here. */
+/** Draws one finch mark by replaying its real vector path (see spec.ts -- parsed directly from
+ *  the operator-supplied little_bird_red.svg / little_bird_yellow.svg, not an approximation).
+ *  `centerOffset` is relative to the bar's own attach point (leftAttachX, barTop); `path`
+ *  commands are relative to the mark's own path-bbox center, both in comp-space, scaled by
+ *  `s` here. */
 function drawFinchMark(
   ctx: DrawCtx,
   layout: BarLayout,
   centerOffset: { x: number; y: number },
-  vertices: { x: number; y: number }[],
+  path: spec.FinchPathCmd[],
 ) {
   const { s, leftAttachX, barTop } = layout;
   const cx = leftAttachX + centerOffset.x * s;
   const cy = barTop + centerOffset.y * s;
   ctx.beginPath();
-  vertices.forEach((v, i) => {
-    const x = cx + v.x * s;
-    const y = cy + v.y * s;
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  });
-  ctx.closePath();
+  for (const cmd of path) {
+    if (cmd.op === 'M') ctx.moveTo(cx + cmd.x * s, cy + cmd.y * s);
+    else if (cmd.op === 'L') ctx.lineTo(cx + cmd.x * s, cy + cmd.y * s);
+    else if (cmd.op === 'C') {
+      ctx.bezierCurveTo(
+        cx + cmd.x1 * s, cy + cmd.y1 * s,
+        cx + cmd.x2 * s, cy + cmd.y2 * s,
+        cx + cmd.x * s, cy + cmd.y * s,
+      );
+    } else ctx.closePath();
+  }
   ctx.fill();
 }
 
@@ -204,11 +210,11 @@ function drawFinchMarks(ctx: DrawCtx, layout: BarLayout, opacity: number) {
   // correctly paints over most of it, leaving just a sliver visible -- matching the real
   // composition rather than fully hiding it.
   ctx.fillStyle = spec.LITTLE_BIRD_COLOR;
-  drawFinchMark(ctx, layout, spec.LITTLE_BIRD_CENTER_OFFSET, spec.LITTLE_BIRD_VERTICES);
+  drawFinchMark(ctx, layout, spec.LITTLE_BIRD_CENTER_OFFSET, spec.LITTLE_BIRD_PATH);
 
   // Red bird -- on top, per the AEP's own layer order.
   ctx.fillStyle = spec.RED_BIRD_COLOR;
-  drawFinchMark(ctx, layout, spec.RED_BIRD_CENTER_OFFSET, spec.RED_BIRD_VERTICES);
+  drawFinchMark(ctx, layout, spec.RED_BIRD_CENTER_OFFSET, spec.RED_BIRD_PATH);
 
   ctx.restore();
 }
