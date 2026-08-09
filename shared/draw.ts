@@ -71,9 +71,11 @@ function tracePath(ctx: DrawCtx, layout: BarLayout, widthRatio: number, yOffset:
 export interface AnimState {
   growT: number; // 0 = nub width, 1 = fully grown; default 1 for a static/held frame
   opacity: number; // overall bar opacity multiplier, for fade in/out; default 1
+  redBirdT: number; // 0 = collapsed to a point, 1 = full size; default 1 for a static/held frame
+  littleBirdT: number; // 0 = collapsed to a point, 1 = full size; default 1 for a static/held frame
 }
 
-export const DEFAULT_ANIM: AnimState = { growT: 1, opacity: 1 };
+export const DEFAULT_ANIM: AnimState = { growT: 1, opacity: 1, redBirdT: 1, littleBirdT: 1 };
 
 /** A scratch canvas the runtime hands drawSuperBar so the 3-layer background group can be
  *  flattened at full opacity BEFORE `BAR_OPACITY` is applied once to the result -- see the note
@@ -96,10 +98,14 @@ export function drawSuperBar(
   fontFamily: string,
   makeLayer: MakeLayer,
 ) {
-  drawBackgroundGroup(ctx, layout, anim, makeLayer);
+  // Skip entirely while growT is still pinned at 0 by the staged-reveal bird sub-windows (see
+  // sampleInPhase/sampleOutPhase in animate.ts) -- otherwise the nub width (nonzero even at
+  // growT=0) would show through behind the birds before their reveal finishes, which the
+  // reference sequence doesn't show.
+  if (anim.growT > 0) drawBackgroundGroup(ctx, layout, anim, makeLayer);
 
-  // Finch marks -- approximate geometry, anchored to the bar's left edge (independent of width)
-  drawFinchMarks(ctx, layout, anim.opacity);
+  // Finch marks -- anchored to the bar's left edge (independent of width)
+  drawFinchMarks(ctx, layout, anim.opacity, anim.redBirdT, anim.littleBirdT);
 
   drawBarText(ctx, layout, text, anim, fontFamily);
 }
@@ -161,9 +167,11 @@ export function drawBarText(
   anim: AnimState = DEFAULT_ANIM,
   fontFamily: string = spec.TEXT_FONT_FAMILY,
 ) {
-  // Only draw once the bar has grown past the nub, so it doesn't overflow a narrow bar.
-  if (anim.growT <= 0.3) return;
-  const textOpacity = Math.min(1, (anim.growT - 0.3) / 0.3) * anim.opacity;
+  // Starts fading in at the same instant the background starts drawing (growT > 0, matching
+  // drawBackgroundGroup's own gate) rather than waiting for a separate later threshold, so text
+  // and background appear together. Still reaches full opacity over the same 0.3 span as before.
+  if (anim.growT <= 0) return;
+  const textOpacity = Math.min(1, anim.growT / 0.3) * anim.opacity;
   ctx.save();
   ctx.globalAlpha = textOpacity;
   ctx.fillStyle = spec.TEXT_COLOR;
@@ -176,45 +184,109 @@ export function drawBarText(
 /** Draws one finch mark by replaying its real vector path (see spec.ts -- parsed directly from
  *  the operator-supplied little_bird_red.svg / little_bird_yellow.svg, not an approximation).
  *  `centerOffset` is relative to the bar's own attach point (leftAttachX, barTop); `path`
- *  commands are relative to the mark's own path-bbox center, both in comp-space, scaled by
- *  `s` here. */
+ *  commands are relative to the mark's own path-bbox center, both in comp-space. `scale`
+ *  (0 = collapsed to a point, 1 = full size) scales the path's own coordinates on top of the
+ *  device scale `s`, so the shape shrinks toward `centerOffset` -- done by hand here (not
+ *  ctx.scale/translate/rotate) to match tracePath's convention and keep DrawCtx's
+ *  browser/napi-rs-canvas-shared surface minimal. `rotationRad` rotates the path about
+ *  `pivotOffset` (default the origin, i.e. the shape's own center) before scaling. Animate
+ *  `centerOffset` to translate the mark (the little bird's "jump in"); animate `scale` to grow it
+ *  from a point (the red bird); animate `rotationRad` to unwind it into its resting orientation
+ *  (the little bird's entry tilt, hinged at `pivotOffset` rather than spinning about its center). */
 function drawFinchMark(
   ctx: DrawCtx,
   layout: BarLayout,
   centerOffset: { x: number; y: number },
   path: spec.FinchPathCmd[],
+  scale: number,
+  rotationRad = 0,
+  pivotOffset: { x: number; y: number } = { x: 0, y: 0 },
 ) {
   const { s, leftAttachX, barTop } = layout;
   const cx = leftAttachX + centerOffset.x * s;
   const cy = barTop + centerOffset.y * s;
+  const sc = s * scale;
+  const cosR = Math.cos(rotationRad);
+  const sinR = Math.sin(rotationRad);
+  // Rotate about pivotOffset (in local path units): shift into pivot-relative space, rotate,
+  // shift back, then scale and place on screen.
+  const tx = (x: number, y: number) => {
+    const lx = x - pivotOffset.x;
+    const ly = y - pivotOffset.y;
+    return cx + (lx * cosR - ly * sinR + pivotOffset.x) * sc;
+  };
+  const ty = (x: number, y: number) => {
+    const lx = x - pivotOffset.x;
+    const ly = y - pivotOffset.y;
+    return cy + (lx * sinR + ly * cosR + pivotOffset.y) * sc;
+  };
   ctx.beginPath();
   for (const cmd of path) {
-    if (cmd.op === 'M') ctx.moveTo(cx + cmd.x * s, cy + cmd.y * s);
-    else if (cmd.op === 'L') ctx.lineTo(cx + cmd.x * s, cy + cmd.y * s);
+    if (cmd.op === 'M') ctx.moveTo(tx(cmd.x, cmd.y), ty(cmd.x, cmd.y));
+    else if (cmd.op === 'L') ctx.lineTo(tx(cmd.x, cmd.y), ty(cmd.x, cmd.y));
     else if (cmd.op === 'C') {
       ctx.bezierCurveTo(
-        cx + cmd.x1 * s, cy + cmd.y1 * s,
-        cx + cmd.x2 * s, cy + cmd.y2 * s,
-        cx + cmd.x * s, cy + cmd.y * s,
+        tx(cmd.x1, cmd.y1), ty(cmd.x1, cmd.y1),
+        tx(cmd.x2, cmd.y2), ty(cmd.x2, cmd.y2),
+        tx(cmd.x, cmd.y), ty(cmd.x, cmd.y),
       );
     } else ctx.closePath();
   }
   ctx.fill();
 }
 
-function drawFinchMarks(ctx: DrawCtx, layout: BarLayout, opacity: number) {
+/** Linear interpolation of a comp-space {x,y} offset. */
+function lerpOffset(
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+  t: number,
+): { x: number; y: number } {
+  return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+}
+
+function drawFinchMarks(
+  ctx: DrawCtx,
+  layout: BarLayout,
+  opacity: number,
+  redBirdT: number,
+  littleBirdT: number,
+) {
   ctx.save();
   ctx.globalAlpha = opacity;
 
-  // Little bird (yellow) -- drawn first, so Red Bird (topmost in the real AE layer stack)
-  // correctly paints over most of it, leaving just a sliver visible -- matching the real
-  // composition rather than fully hiding it.
-  ctx.fillStyle = spec.LITTLE_BIRD_COLOR;
-  drawFinchMark(ctx, layout, spec.LITTLE_BIRD_CENTER_OFFSET, spec.LITTLE_BIRD_PATH);
+  // Little bird (yellow) -- drawn first, so Red Bird (topmost in the real AE layer stack) paints
+  // over it. It "jumps in" from behind red: full size throughout, its center translating from
+  // behind red (LITTLE_BIRD_REVEAL_START_OFFSET) up-and-left to its resting spot as littleBirdT
+  // ramps 0->1. Only drawn once littleBirdT > 0 -- while it's pinned at 0 (the whole red-bird
+  // stage, and global t=0) a full-size yellow bird would otherwise show past the still-small red
+  // bird, which the reference never shows.
+  if (littleBirdT > 0) {
+    ctx.fillStyle = spec.LITTLE_BIRD_COLOR;
+    const littleCenter = lerpOffset(
+      spec.LITTLE_BIRD_REVEAL_START_OFFSET,
+      spec.LITTLE_BIRD_CENTER_OFFSET,
+      littleBirdT,
+    );
+    // littleBirdT already arrives pre-eased (see sampleInPhase/sampleOutPhase in animate.ts), so
+    // the residual (1 - littleBirdT) unwinds the entry tilt in lockstep with the jump-in, reaching
+    // 0 rotation exactly when the jump-in finishes -- no separate easing needed here.
+    const littleRotation = spec.LITTLE_BIRD_REVEAL_START_ANGLE_RAD * (1 - littleBirdT);
+    drawFinchMark(
+      ctx,
+      layout,
+      littleCenter,
+      spec.LITTLE_BIRD_PATH,
+      1,
+      littleRotation,
+      spec.LITTLE_BIRD_ROTATION_PIVOT_OFFSET,
+    );
+  }
 
-  // Red bird -- on top, per the AEP's own layer order.
-  ctx.fillStyle = spec.RED_BIRD_COLOR;
-  drawFinchMark(ctx, layout, spec.RED_BIRD_CENTER_OFFSET, spec.RED_BIRD_PATH);
+  // Red bird -- on top, per the AEP's own layer order. Scales in from a point at its own center.
+  if (redBirdT > 0) {
+    ctx.fillStyle = spec.RED_BIRD_COLOR;
+    drawFinchMark(ctx, layout, spec.RED_BIRD_CENTER_OFFSET, spec.RED_BIRD_PATH, redBirdT);
+  }
 
   ctx.restore();
 }

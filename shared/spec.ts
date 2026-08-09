@@ -95,6 +95,23 @@ export const RED_BIRD_PATH: FinchPathCmd[] = [
 
 export const LITTLE_BIRD_COLOR = '#F7D87A';
 export const LITTLE_BIRD_CENTER_OFFSET = { x: 32.25, y: -38.25 };
+// The little bird "jumps in" from behind the red bird: during its reveal sub-window its center
+// travels from this start offset (= the red bird's own center, so it begins fully occluded behind
+// red) up-and-left to LITTLE_BIRD_CENTER_OFFSET. Measured from the reference render: yellow's
+// centroid slides from red's center height to its final resting spot as it emerges from behind red
+// (red is drawn on top). It stays full size throughout -- this is a translate, not a scale-in.
+export const LITTLE_BIRD_REVEAL_START_OFFSET = { x: 105.75, y: 0 };
+// The little bird also enters slightly ROTATED and unwinds to its resting orientation as it
+// finishes its jump-in (measured from the reference: its long axis rotates ~25deg over the entry).
+// Applied about its own center, eased to 0 by littleBirdT. Positive = clockwise in screen space
+// (y-down). Tune magnitude/sign here.
+export const LITTLE_BIRD_REVEAL_START_ANGLE_RAD = (22 * Math.PI) / 180;
+// Rotation pivots about this point (in the path's own local, path-relative units -- same space
+// as LITTLE_BIRD_PATH's coordinates) rather than the shape's center: the reference shows the
+// bottom of the shape staying anchored near red's edge while the top swings down into place, a
+// hinge at the bottom, not a spin about the middle. First estimate: bottom-center of the local
+// bbox (half-height ~21.23, from the path's documented native bbox). Tune against reference.
+export const LITTLE_BIRD_ROTATION_PIVOT_OFFSET = { x: 0, y: 21.23 };
 // native path bbox: 109.39 x 81.67, pre-scaled by 0.52 below (from little_bird_yellow.svg)
 export const LITTLE_BIRD_PATH: FinchPathCmd[] = [
   { op: 'M', x: 28.14, y: -8.12 },
@@ -117,3 +134,11 @@ export const LITTLE_BIRD_PATH: FinchPathCmd[] = [
 export const GROW_NUB_WIDTH = 163;
 export const GROW_KEYFRAME_TS = [0, 0.15, 0.55, 1]; // normalized time
 export const GROW_KEYFRAME_WIDTHS_RATIO = [163, 173, 265, 803]; // relative shape, scaled to actual barWidth at render time
+
+// --- Staged reveal sub-window split of inDurationSec ---------------------------------------
+// Ordered, non-overlapping: [red bird scale] -> [little bird scale] -> [bar grow + text fade].
+// Fractions of inDurationSec; must sum to <= 1 (remainder goes to the bar/text stage). Chosen
+// so each bird stage reads as a distinct beat rather than a blur -- adjust here only, do not
+// fork sampleBar's ordering logic.
+export const REVEAL_RED_BIRD_FRACTION = 0.25;
+export const REVEAL_LITTLE_BIRD_FRACTION = 0.25;
