@@ -14,6 +14,7 @@ export interface DrawCtx {
   arc(x: number, y: number, radius: number, startAngle: number, endAngle: number, counterclockwise?: boolean): void;
   closePath(): void;
   fill(): void;
+  clip(): void;
   fillRect(x: number, y: number, w: number, h: number): void;
   drawImage(
     image: unknown,
@@ -107,7 +108,17 @@ export function drawSuperBar(
   // Finch marks -- anchored to the bar's left edge (independent of width)
   drawFinchMarks(ctx, layout, anim.opacity, anim.redBirdT, anim.littleBirdT);
 
+  // Reveal the text with the bar's own width-wipe, clipping to the bar's ACTUAL silhouette (the same
+  // trace + widthRatio as the white face) rather than a vertical line at the attach point. The text
+  // runs slightly past the attach vertex (TEXT_RIGHT_PAD is negative) into the rounded right cap, so
+  // a straight vertical clip at the attach point sheared off its tail (the final letter). Clipping to
+  // the silhouette reveals the text exactly where the white covers it -- cap included -- so nothing is
+  // clipped at full width, and it still uncovers progressively as the bar grows.
+  ctx.save();
+  tracePath(ctx, layout, growProgressToWidthRatio(anim.growT), 0);
+  ctx.clip();
   drawBarText(ctx, layout, text, anim, fontFamily);
+  ctx.restore();
 }
 
 /**
@@ -159,14 +170,40 @@ function drawBackgroundGroup(ctx: DrawCtx, layout: BarLayout, anim: AnimState, m
 }
 
 /** The text layer alone -- shared between the procedural bar above and the imported-artwork
- *  (9-slice) bar in ninegrid.ts, so text placement/reveal timing can never drift between them. */
+ *  (9-slice) bar in ninegrid.ts, so text placement/reveal timing can never drift between them.
+ *  When `revealRightX` is given, the text is clipped to everything left of it and drawn at
+ *  `anim.opacity` directly -- so it reveals in lockstep with the bar's own growing right edge
+ *  (callers pass the same rightAttachX the background is drawn to) instead of via a separate
+ *  fade timed against `growT`, which used to let the text show at full width before the
+ *  background had grown wide enough to cover it. Without `revealRightX`, falls back to the old
+ *  growT-gated fade. */
 export function drawBarText(
   ctx: DrawCtx,
   layout: BarLayout,
   text: string,
   anim: AnimState = DEFAULT_ANIM,
   fontFamily: string = spec.TEXT_FONT_FAMILY,
+  revealRightX?: number,
 ) {
+  if (revealRightX !== undefined) {
+    ctx.save();
+    const CLIP_MARGIN = 1e6;
+    ctx.beginPath();
+    ctx.moveTo(-CLIP_MARGIN, -CLIP_MARGIN);
+    ctx.lineTo(revealRightX, -CLIP_MARGIN);
+    ctx.lineTo(revealRightX, CLIP_MARGIN);
+    ctx.lineTo(-CLIP_MARGIN, CLIP_MARGIN);
+    ctx.closePath();
+    ctx.clip();
+    ctx.globalAlpha = anim.opacity;
+    ctx.fillStyle = spec.TEXT_COLOR;
+    ctx.font = `700 ${layout.textSizePx}px ${fontFamily}`;
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillText(text, layout.textX, layout.textBaselineY);
+    ctx.restore();
+    return;
+  }
+
   // Starts fading in at the same instant the background starts drawing (growT > 0, matching
   // drawBackgroundGroup's own gate) rather than waiting for a separate later threshold, so text
   // and background appear together. Still reaches full opacity over the same 0.3 span as before.
@@ -255,7 +292,7 @@ function drawFinchMarks(
   ctx.globalAlpha = opacity;
 
   // Little bird (yellow) -- drawn first, so Red Bird (topmost in the real AE layer stack) paints
-  // over it. It "jumps in" from behind red: full size throughout, its center translating from
+  // over it. It "jumps in" from behind red: scaling up as it enters, its center translating from
   // behind red (LITTLE_BIRD_REVEAL_START_OFFSET) up-and-left to its resting spot as littleBirdT
   // ramps 0->1. Only drawn once littleBirdT > 0 -- while it's pinned at 0 (the whole red-bird
   // stage, and global t=0) a full-size yellow bird would otherwise show past the still-small red
@@ -276,7 +313,7 @@ function drawFinchMarks(
       layout,
       littleCenter,
       spec.LITTLE_BIRD_PATH,
-      1,
+      littleBirdT,
       littleRotation,
       spec.LITTLE_BIRD_ROTATION_PIVOT_OFFSET,
     );

@@ -225,5 +225,5 @@ export function drawImportedBar(
 
   // Text is the only live layer on top of imported art (per the "whole background is baked in" design).
   const textLayout = { ...layout, coreWidth: totalW, rightAttachX: x0 + totalW, textX: x0 + leftSliceW + art.textInsetLeft * layout.s };
-  drawBarText(ctx, textLayout as any, text, anim, fontFamily);
+  drawBarText(ctx, textLayout as any, text, anim, fontFamily, drawnWidth);
 }
