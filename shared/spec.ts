@@ -102,10 +102,14 @@ export const LITTLE_BIRD_CENTER_OFFSET = { x: 32.25, y: -38.25 };
 // (red is drawn on top). It stays full size throughout -- this is a translate, not a scale-in.
 export const LITTLE_BIRD_REVEAL_START_OFFSET = { x: 105.75, y: 0 };
 // The little bird also enters slightly ROTATED and unwinds to its resting orientation as it
-// finishes its jump-in (measured from the reference: its long axis rotates ~25deg over the entry).
-// Applied about its own center, eased to 0 by littleBirdT. Positive = clockwise in screen space
-// (y-down). Tune magnitude/sign here.
-export const LITTLE_BIRD_REVEAL_START_ANGLE_RAD = (22 * Math.PI) / 180;
+// finishes its jump-in (measured from the reference: its long axis rotates ~22deg over the entry).
+// Applied about LITTLE_BIRD_ROTATION_PIVOT_OFFSET (bottom-center, below), eased to 0 by littleBirdT.
+// Sign convention: positive = clockwise in screen space (y-down). The reference shows the bird
+// entering rotated COUNTER-clockwise (right tip up, hinged at its bottom edge near red) and then
+// rotating clockwise down into its resting orientation -- so this MUST be negative. An earlier pass
+// had it positive, which mirrored the swing (the bird appeared to hinge from the top / wrong side).
+// Tune magnitude here; do not flip the sign back to positive.
+export const LITTLE_BIRD_REVEAL_START_ANGLE_RAD = (-22 * Math.PI) / 180;
 // Rotation pivots about this point (in the path's own local, path-relative units -- same space
 // as LITTLE_BIRD_PATH's coordinates) rather than the shape's center: the reference shows the
 // bottom of the shape staying anchored near red's edge while the top swings down into place, a
