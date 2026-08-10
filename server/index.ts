@@ -45,28 +45,65 @@ interface Job {
 }
 const jobs = new Map<string, Job>();
 
+interface ExportBarPayload {
+  id?: string;
+  text: string;
+  inSec: number;
+  holdSec: number;
+  inDurationSec?: number;
+  outDurationSec?: number;
+  easingIn?: EasingName;
+  easingOut?: EasingName;
+}
+
+// Bar ids are used directly as a filename prefix in the per-bar frame-sequence glob
+// (`${bar.id}_NNNNNN.png`, see server/render.ts / server/ffmpeg.ts) -- sanitize rather than trust
+// client input for path construction, same pattern as the /fonts/:name route above.
+function sanitizeBarId(raw: string | undefined, index: number): string {
+  const safe = (raw ?? '').replace(/[^A-Za-z0-9_-]/g, '');
+  return safe.length > 0 ? safe : `bar-${index}`;
+}
+
 app.post('/api/export', (req, res) => {
-  const { uploadId, text, inSec, holdSec, inDurationSec, outDurationSec, easingIn, easingOut, format, art } = req.body as {
+  const { uploadId, bars: barsPayload, format, art } = req.body as {
     uploadId: string;
-    text: string;
-    inSec: number;
-    holdSec: number;
-    inDurationSec?: number;
-    outDurationSec?: number;
-    easingIn?: EasingName;
-    easingOut?: EasingName;
+    bars: ExportBarPayload[];
     format: ExportFormat;
     art?: ImportedArtPayload;
   };
 
   const inputPath = `${UPLOAD_DIR}/${uploadId}`;
   if (!existsSync(inputPath)) return res.status(404).json({ error: 'unknown uploadId' });
+  if (!Array.isArray(barsPayload) || barsPayload.length === 0) {
+    return res.status(400).json({ error: 'bars must be a non-empty array' });
+  }
 
-  const bar: BarInstance = { ...defaultBar('bar1', text, inSec), holdSec };
-  if (inDurationSec != null) bar.inDurationSec = inDurationSec;
-  if (outDurationSec != null) bar.outDurationSec = outDurationSec;
-  if (easingIn) bar.easingIn = easingIn;
-  if (easingOut) bar.easingOut = easingOut;
+  const seenIds = new Set<string>();
+  const bars: BarInstance[] = barsPayload.map((bp, i) => {
+    let id = sanitizeBarId(bp.id, i);
+    while (seenIds.has(id)) id = `${id}-${i}`;
+    seenIds.add(id);
+    const b: BarInstance = { ...defaultBar(id, bp.text, bp.inSec), holdSec: bp.holdSec };
+    if (bp.inDurationSec != null) b.inDurationSec = bp.inDurationSec;
+    if (bp.outDurationSec != null) b.outDurationSec = bp.outDurationSec;
+    if (bp.easingIn) b.easingIn = bp.easingIn;
+    if (bp.easingOut) b.easingOut = bp.easingOut;
+    return b;
+  });
+
+  // Defensive: the render engine composites every bar at the same fixed on-screen position
+  // (overlay=0:0 per bar in server/ffmpeg.ts), so two visibly-overlapping bars would draw
+  // directly on top of each other -- reject rather than silently produce a garbled export.
+  const sortedBars = [...bars].sort((a, b) => a.inSec - b.inSec);
+  for (let i = 1; i < sortedBars.length; i++) {
+    const prevEnd = sortedBars[i - 1].inSec + sortedBars[i - 1].inDurationSec
+      + sortedBars[i - 1].holdSec + sortedBars[i - 1].outDurationSec;
+    if (sortedBars[i].inSec < prevEnd) {
+      return res.status(400).json({
+        error: `bars "${sortedBars[i - 1].text}" and "${sortedBars[i].text}" have overlapping visible windows`,
+      });
+    }
+  }
 
   const jobId = randomUUID();
   const ext = format === 'mp4' ? 'mp4' : 'mov';
@@ -77,7 +114,7 @@ app.post('/api/export', (req, res) => {
   exportVideo({
     inputPath,
     outputPath,
-    bars: [bar],
+    bars,
     format,
     art,
     onProgress: (f) => {

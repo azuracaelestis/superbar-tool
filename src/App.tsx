@@ -38,7 +38,10 @@ interface UploadInfo {
 
 export default function App() {
   const [upload, setUploadState] = useState<UploadInfo | null>(null);
-  const [bar, setBar] = useState<BarInstance>(defaultBar('bar1', 'GPU & Performance Fixes', 0.5));
+  const [bars, setBars] = useState<BarInstance[]>([defaultBar('bar-1', 'GPU & Performance Fixes', 0.5)]);
+  const [selectedBarId, setSelectedBarId] = useState<string>('bar-1');
+  const nextIdRef = useRef(2);
+  const selectedBar = bars.find((b) => b.id === selectedBarId) ?? null;
   const [format, setFormat] = useState<'mp4' | 'mov' | 'mov-prores'>('mp4');
   const [exportState, setExportState] = useState<{ progress: number; downloadUrl: string | null; error: string | null } | null>(null);
   const [fontsReady, setFontsReady] = useState(false);
@@ -100,9 +103,12 @@ export default function App() {
       canvas.height = upload.height;
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      const anim = sampleBar(bar, video.currentTime);
-      if (anim) {
-        const fontFamily = CJK_PATTERN.test(bar.text) ? 'GenJyuuGothic-Bold' : 'Gotham-Bold';
+      // Bars never overlap in time (enforced by Timeline's drag clamps), so at most one is ever
+      // active -- loop and draw whichever one sampleBar returns non-null for, then stop.
+      for (const b of bars) {
+        const anim = sampleBar(b, video.currentTime);
+        if (!anim) continue;
+        const fontFamily = CJK_PATTERN.test(b.text) ? 'GenJyuuGothic-Bold' : 'Gotham-Bold';
         if (preset.art && presetImage) {
           const art: ImportedArtSpec = {
             image: presetImage,
@@ -113,18 +119,19 @@ export default function App() {
             textInsetRight: preset.art.textInsetRight,
             textBaselineFromTop: preset.art.textBaselineFromTop,
           };
-          const layout = computeImportedLayout(bar.text, art, upload.width, upload.height, measure, fontFamily);
-          drawImportedBar(ctx as any, layout, art, bar.text, anim, fontFamily);
+          const layout = computeImportedLayout(b.text, art, upload.width, upload.height, measure, fontFamily);
+          drawImportedBar(ctx as any, layout, art, b.text, anim, fontFamily);
         } else {
-          const layout = computeLayout(bar.text, upload.width, upload.height, measure, fontFamily);
-          drawSuperBar(ctx as any, layout, bar.text, anim, fontFamily, makeLayer);
+          const layout = computeLayout(b.text, upload.width, upload.height, measure, fontFamily);
+          drawSuperBar(ctx as any, layout, b.text, anim, fontFamily, makeLayer);
         }
+        break;
       }
       raf = requestAnimationFrame(draw);
     };
     raf = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(raf);
-  }, [upload, bar, fontsReady, preset.art, presetImage]);
+  }, [upload, bars, fontsReady, preset.art, presetImage]);
 
   async function handleFile(file: File) {
     const form = new FormData();
@@ -136,20 +143,23 @@ export default function App() {
   }
 
   async function handleExport() {
-    if (!upload) return;
+    if (!upload || bars.length === 0) return;
     setExportState({ progress: 0, downloadUrl: null, error: null });
     const res = await fetch('/api/export', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         uploadId: upload.id,
-        text: bar.text,
-        inSec: bar.inSec,
-        holdSec: bar.holdSec,
-        inDurationSec: bar.inDurationSec,
-        outDurationSec: bar.outDurationSec,
-        easingIn: bar.easingIn,
-        easingOut: bar.easingOut,
+        bars: bars.map((b) => ({
+          id: b.id,
+          text: b.text,
+          inSec: b.inSec,
+          holdSec: b.holdSec,
+          inDurationSec: b.inDurationSec,
+          outDurationSec: b.outDurationSec,
+          easingIn: b.easingIn,
+          easingOut: b.easingOut,
+        })),
         format,
         art: preset.art,
       }),
@@ -168,6 +178,45 @@ export default function App() {
         setExportState({ progress: data.progress, downloadUrl: null, error: null });
       }
     };
+  }
+
+  function patchSelectedBar(patch: Partial<BarInstance>) {
+    setBars((bs) => bs.map((b) => (b.id === selectedBarId ? { ...b, ...patch } : b)));
+  }
+
+  function patchBar(id: string, patch: Partial<BarInstance>) {
+    setBars((bs) => bs.map((b) => (b.id === id ? { ...b, ...patch } : b)));
+  }
+
+  // Always appended after the last (by inSec) existing bar's own end, with a small fixed gap --
+  // deterministic and simple, no mid-timeline insertion. Room-check mirrors this so the "+ Add
+  // bar" button can be disabled instead of silently no-op'ing when there's nothing to click into.
+  const NEW_BAR_GAP_SEC = 0.25;
+  function newBarPlacement(): number {
+    const sorted = [...bars].sort((a, b) => a.inSec - b.inSec);
+    const last = sorted[sorted.length - 1];
+    return last ? last.inSec + last.inDurationSec + last.holdSec + last.outDurationSec + NEW_BAR_GAP_SEC : 0;
+  }
+  const newBarDefaultLength = 0.6 + 4 + 0.4; // matches defaultBar's stock in+hold+out
+  const hasRoomForNewBar = !!upload && newBarPlacement() + newBarDefaultLength <= upload.durationSec;
+
+  function addBar() {
+    if (!upload || !hasRoomForNewBar) return;
+    const id = `bar-${nextIdRef.current++}`;
+    const newBar = defaultBar(id, 'New text', newBarPlacement());
+    setBars((bs) => [...bs, newBar]);
+    setSelectedBarId(id);
+  }
+
+  function deleteBar(id: string) {
+    setBars((bs) => {
+      const next = bs.filter((b) => b.id !== id);
+      if (id === selectedBarId) {
+        const sorted = [...next].sort((a, b) => a.inSec - b.inSec);
+        setSelectedBarId(sorted[0]?.id ?? '');
+      }
+      return next;
+    });
   }
 
   return (
@@ -192,11 +241,13 @@ export default function App() {
             <Timeline
               durationSec={upload.durationSec}
               videoRef={videoRef}
-              bar={bar}
+              bars={bars}
+              selectedBarId={selectedBarId}
+              onSelectBar={setSelectedBarId}
               onScrub={(t) => {
                 if (videoRef.current) videoRef.current.currentTime = t;
               }}
-              onChangeBar={(patch) => setBar((b) => ({ ...b, ...patch }))}
+              onChangeBar={patchBar}
             />
           </>
         )}
@@ -228,12 +279,33 @@ export default function App() {
           </div>
         </div>
 
+        <div className="flex items-center justify-between text-sm">
+          <span>Super bars ({bars.length})</span>
+          <div className="flex gap-2">
+            <button
+              disabled={!upload || !hasRoomForNewBar}
+              onClick={addBar}
+              className="bg-zinc-800 hover:bg-zinc-700 disabled:bg-zinc-800/50 disabled:text-zinc-500 disabled:cursor-not-allowed rounded px-2 py-1"
+            >
+              + Add bar
+            </button>
+            <button
+              disabled={!selectedBar}
+              onClick={() => selectedBar && deleteBar(selectedBar.id)}
+              className="bg-zinc-800 hover:bg-zinc-700 disabled:bg-zinc-800/50 disabled:text-zinc-500 disabled:cursor-not-allowed rounded px-2 py-1"
+            >
+              Delete
+            </button>
+          </div>
+        </div>
+
         <label className="flex flex-col gap-1 text-sm">
           Text
           <input
-            className="bg-zinc-800 rounded px-2 py-1"
-            value={bar.text}
-            onChange={(e) => setBar({ ...bar, text: e.target.value })}
+            className="bg-zinc-800 rounded px-2 py-1 disabled:opacity-50"
+            disabled={!selectedBar}
+            value={selectedBar?.text ?? ''}
+            onChange={(e) => patchSelectedBar({ text: e.target.value })}
           />
         </label>
 
@@ -245,10 +317,11 @@ export default function App() {
               min={0}
               max={2}
               step={0.05}
-              value={bar.inDurationSec}
-              onChange={(e) => setBar({ ...bar, inDurationSec: Number(e.target.value) })}
+              disabled={!selectedBar}
+              value={selectedBar?.inDurationSec ?? 0}
+              onChange={(e) => patchSelectedBar({ inDurationSec: Number(e.target.value) })}
             />
-            <span className="text-xs text-zinc-400">{bar.inDurationSec.toFixed(2)}s</span>
+            <span className="text-xs text-zinc-400">{(selectedBar?.inDurationSec ?? 0).toFixed(2)}s</span>
           </label>
           <label className="flex flex-col gap-1 text-sm flex-1">
             Out duration (s)
@@ -257,10 +330,11 @@ export default function App() {
               min={0}
               max={2}
               step={0.05}
-              value={bar.outDurationSec}
-              onChange={(e) => setBar({ ...bar, outDurationSec: Number(e.target.value) })}
+              disabled={!selectedBar}
+              value={selectedBar?.outDurationSec ?? 0}
+              onChange={(e) => patchSelectedBar({ outDurationSec: Number(e.target.value) })}
             />
-            <span className="text-xs text-zinc-400">{bar.outDurationSec.toFixed(2)}s</span>
+            <span className="text-xs text-zinc-400">{(selectedBar?.outDurationSec ?? 0).toFixed(2)}s</span>
           </label>
         </div>
 
@@ -268,9 +342,10 @@ export default function App() {
           <label className="flex flex-col gap-1 text-sm flex-1">
             Ease in
             <select
-              className="bg-zinc-800 rounded px-2 py-1"
-              value={bar.easingIn}
-              onChange={(e) => setBar({ ...bar, easingIn: e.target.value as EasingName })}
+              className="bg-zinc-800 rounded px-2 py-1 disabled:opacity-50"
+              disabled={!selectedBar}
+              value={selectedBar?.easingIn ?? 'easeOut'}
+              onChange={(e) => patchSelectedBar({ easingIn: e.target.value as EasingName })}
             >
               {EASINGS.map((e) => (
                 <option key={e} value={e}>{e}</option>
@@ -280,9 +355,10 @@ export default function App() {
           <label className="flex flex-col gap-1 text-sm flex-1">
             Ease out
             <select
-              className="bg-zinc-800 rounded px-2 py-1"
-              value={bar.easingOut}
-              onChange={(e) => setBar({ ...bar, easingOut: e.target.value as EasingName })}
+              className="bg-zinc-800 rounded px-2 py-1 disabled:opacity-50"
+              disabled={!selectedBar}
+              value={selectedBar?.easingOut ?? 'easeOut'}
+              onChange={(e) => patchSelectedBar({ easingOut: e.target.value as EasingName })}
             >
               {EASINGS.map((e) => (
                 <option key={e} value={e}>{e}</option>
@@ -305,7 +381,7 @@ export default function App() {
         </label>
 
         <button
-          disabled={!upload}
+          disabled={!upload || bars.length === 0}
           onClick={handleExport}
           className="mt-2 bg-indigo-600 hover:bg-indigo-500 disabled:bg-zinc-700 disabled:text-zinc-500 rounded px-3 py-2 font-medium"
         >
