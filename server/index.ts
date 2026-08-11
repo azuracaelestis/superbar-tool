@@ -3,7 +3,7 @@ import multer from 'multer';
 import { mkdirSync, existsSync, createReadStream, statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
-import { probeVideo, exportVideo, exportAlphaTemplate, type ExportFormat } from './ffmpeg.js';
+import { probeVideo, exportVideo, exportAlphaTemplate, exportAlphaBatch, applySpeed, type ExportFormat } from './ffmpeg.js';
 import { defaultBar, type BarInstance, type EasingName } from '../shared/animate.js';
 import type { ImportedArtPayload } from '../shared/importedArt.js';
 
@@ -64,12 +64,6 @@ function sanitizeBarId(raw: string | undefined, index: number): string {
   return safe.length > 0 ? safe : `bar-${index}`;
 }
 
-// Reference tempo the `speed` knob scales against -- reused from defaultBar's own stock values
-// rather than duplicated as separate magic numbers, so the two can never drift out of sync.
-const { inDurationSec: REF_IN_DURATION_SEC, outDurationSec: REF_OUT_DURATION_SEC } = defaultBar('__ref__', '', 0);
-const MIN_SPEED = 0.5;
-const MAX_SPEED = 2.0;
-
 app.post('/api/export', (req, res) => {
   const { uploadId, bars: barsPayload, format, art, mode, speed, width, height, fps } = req.body as {
     uploadId?: string;
@@ -101,17 +95,9 @@ app.post('/api/export', (req, res) => {
   });
 
   // Motion-speed control: a bounded tempo multiplier, applied to BOTH export modes. Wins over
-  // whatever inDurationSec/outDurationSec a bar payload separately requested -- when a caller
-  // explicitly asks for a speed, that's the authoritative tempo, not just a fallback default.
-  // holdSec and the easings are untouched; sampleBar (shared/animate.ts) normalizes elapsed time
-  // to [0,1] before easing, so scaling these durations changes tempo only, never the reveal shape.
-  if (speed != null) {
-    const clampedSpeed = Math.min(MAX_SPEED, Math.max(MIN_SPEED, speed));
-    for (const b of bars) {
-      b.inDurationSec = REF_IN_DURATION_SEC / clampedSpeed;
-      b.outDurationSec = REF_OUT_DURATION_SEC / clampedSpeed;
-    }
-  }
+  // whatever inDurationSec/outDurationSec a bar payload separately requested (see applySpeed in
+  // server/ffmpeg.ts, shared with exportAlphaBatch below).
+  if (speed != null) applySpeed(bars, speed);
 
   const jobId = randomUUID();
 
@@ -182,6 +168,58 @@ app.post('/api/export', (req, res) => {
     bars,
     format,
     art,
+    onProgress: (f) => {
+      job.progress = f;
+      for (const listener of job.listeners) listener.write(`data: ${JSON.stringify({ progress: f })}\n\n`);
+    },
+  })
+    .then(() => {
+      job.done = true;
+      for (const listener of job.listeners) {
+        listener.write(`data: ${JSON.stringify({ progress: 1, done: true })}\n\n`);
+        listener.end();
+      }
+    })
+    .catch((err) => {
+      job.error = String(err.message || err);
+      for (const listener of job.listeners) {
+        listener.write(`data: ${JSON.stringify({ error: job.error })}\n\n`);
+        listener.end();
+      }
+    });
+
+  res.json({ jobId });
+});
+
+// CSV-batch alpha export: one standalone alpha-template .mov per input string, zipped into a
+// single download. Alpha-only in this phase -- no uploadId, no source video. Reuses the same
+// Job/SSE progress plumbing as /api/export; the download route below already derives its
+// filename extension from job.outputPath, so a .zip output needs no changes there.
+app.post('/api/export-batch', (req, res) => {
+  const { texts, speed, width, height, fps } = req.body as {
+    texts: string[];
+    speed?: number;
+    width?: number;
+    height?: number;
+    fps?: number;
+  };
+
+  if (!Array.isArray(texts) || texts.length === 0) {
+    return res.status(400).json({ error: 'texts must be a non-empty array' });
+  }
+
+  const jobId = randomUUID();
+  const outputPath = `${OUTPUT_DIR}/${jobId}.zip`;
+  const job: Job = { progress: 0, done: false, error: null, outputPath, listeners: new Set() };
+  jobs.set(jobId, job);
+
+  exportAlphaBatch({
+    texts,
+    outputZipPath: outputPath,
+    speed,
+    width,
+    height,
+    fps,
     onProgress: (f) => {
       job.progress = f;
       for (const listener of job.listeners) listener.write(`data: ${JSON.stringify({ progress: f })}\n\n`);

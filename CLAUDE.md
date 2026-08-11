@@ -138,7 +138,48 @@ pattern) — `ffprobe` the output for `profile=4444`/`codec_tag_string=ap4h`, an
 sample onto bright footage in Premiere to eyeball edge fringing before trusting a change here.
 
 Out of scope for now, on purpose: multi-bar alpha compositing (several templates layered), a UI
-mode picker, CSV-driven batch generation. This path is backend-only until proven.
+mode picker. CSV-driven batch generation is covered next.
+
+### CSV/Excel-driven batch alpha export
+
+`POST /api/export-batch` (`server/index.ts`) generates one standalone alpha-template `.mov` per
+input string — for a video auditor with a spreadsheet of product/title names who wants one file
+per row without retyping each name into the editor. Alpha-only: no `uploadId`, no source video,
+same as `exportAlphaTemplate` above. Body: `{ texts: string[], speed?, width?, height?, fps? }`.
+
+- **`exportAlphaBatch()`** (`server/ffmpeg.ts`) loops `exportAlphaTemplate` once per string,
+  **sequentially** (not in parallel, to bound concurrent ffmpeg processes and keep `onProgress` a
+  meaningful "N of M rows done"), then zips the results with the system `zip` binary
+  (`execFileSync('zip', ['-j', '-q', ...])` — no new npm dependency; this tool already only ships
+  for a local Mac team via `start.command`, and `/usr/bin/zip` is standard there). Capped at
+  `MAX_BATCH_ROWS = 200` — a guardrail against an oversized spreadsheet spawning hundreds of ffmpeg
+  processes, not a real expected ceiling.
+- **File naming**: each row becomes `NNN-slug.mov` (e.g. row 3 "GPU & Performance Fixes" →
+  `003-gpu-performance-fixes.mov`) — the index prefix keeps the zip listing sorted/stable even with
+  duplicate or blank names; the slug keeps it human-identifiable, which is the actual point for an
+  auditor matching files back to spreadsheet rows.
+- **`shared/csv.ts`** parses the uploaded `.csv` client-side (browser reads the file as text, no
+  server-side CSV parsing): a small RFC4180-ish parser handling Excel's `"..."`-quoted fields
+  (embedded commas/quotes/newlines), then `extractTextColumn()` reads a `text`/`name`/`title`/
+  `label` header column if row 0 has one, otherwise treats every row (including row 0) as data and
+  reads column 0. Blank rows/cells are skipped.
+- **`speed`** is the same knob as above (`applySpeed()` in `server/ffmpeg.ts`, now shared by both
+  `/api/export` and `exportAlphaBatch` rather than duplicated) — one clamp definition either path
+  can't drift out of sync on.
+- **UI**: `src/CsvBatch.tsx`, mounted unconditionally in `App.tsx`'s sidebar (no uploaded video
+  required) — file input, a row-count/preview list, a speed slider, and the same progress-bar/
+  download-link pattern as the main export panel (reuses the existing `Job`/SSE plumbing and the
+  `/api/export/:jobId/progress`+`/download` routes as-is; a `.zip` output path flows through the
+  download route's existing extension-based `Content-Disposition` with no route change needed).
+
+Verify with `scripts/test-csv-batch.ts` (direct-call harness: parses a sample CSV with a quoted
+comma and a CJK entry, then calls `exportAlphaBatch` directly) — `unzip -l` the result to confirm
+the `NNN-slug.mov` naming, and `ffprobe` an extracted entry to confirm it's still ProRes
+4444/`yuva444p10le`.
+
+Out of scope for now, on purpose: batch-generating *burned-in* video variants (same uploaded video,
+each row's name composited at the same in-point) — a plausible future extension, but needs a shared
+`uploadId` and timing model across rows, which this phase doesn't touch.
 
 ---
 

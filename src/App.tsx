@@ -5,6 +5,7 @@ import { computeImportedLayout, drawImportedBar, type ImportedArtSpec } from '..
 import { sampleBar, defaultBar, type BarInstance, type EasingName } from '../shared/animate.js';
 import { PRESETS } from './presets.js';
 import Timeline from './Timeline.js';
+import CsvBatch from './CsvBatch.js';
 
 const CJK_PATTERN = /[㐀-鿿豈-﫿぀-ヿ가-힯]/;
 const EASINGS: EasingName[] = ['linear', 'easeOut', 'easeInOut', 'easeOutBack'];
@@ -406,6 +407,8 @@ export default function App() {
             )}
           </div>
         )}
+
+        <CsvBatch />
       </div>
     </div>
   );

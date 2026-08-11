@@ -1,7 +1,7 @@
 import ffmpegPath from 'ffmpeg-static';
 import ffprobeStatic from 'ffprobe-static';
 import { spawn, execFileSync } from 'node:child_process';
-import type { BarInstance } from '../shared/animate.js';
+import { defaultBar, type BarInstance } from '../shared/animate.js';
 import type { ImportedArtPayload } from '../shared/importedArt.js';
 import { renderBarFrames } from './render.js';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -44,6 +44,27 @@ export const ALLOWED_ALPHA_FPS = [23.976, 24, 25, 29.97, 30, 50, 59.94, 60];
 function assertValidAlphaFps(fps: number): void {
   if (!ALLOWED_ALPHA_FPS.some((f) => Math.abs(f - fps) < 0.001)) {
     throw new Error(`fps ${fps} not supported for alpha export; allowed: ${ALLOWED_ALPHA_FPS.join(', ')}`);
+  }
+}
+
+// Reference tempo the `speed` knob scales against -- reused from defaultBar's own stock values
+// rather than duplicated as separate magic numbers, so the two can never drift out of sync.
+// Shared by /api/export (single/multi-bar) and exportAlphaBatch (one row per bar) so both paths
+// clamp identically.
+const { inDurationSec: REF_IN_DURATION_SEC, outDurationSec: REF_OUT_DURATION_SEC } = defaultBar('__ref__', '', 0);
+export const MIN_SPEED = 0.5;
+export const MAX_SPEED = 2.0;
+
+// Motion-speed control: a bounded tempo multiplier. Wins over whatever inDurationSec/outDurationSec
+// a bar already has -- when a caller explicitly asks for a speed, that's the authoritative tempo,
+// not just a fallback default. holdSec and the easings are untouched; sampleBar (shared/animate.ts)
+// normalizes elapsed time to [0,1] before easing, so scaling these two durations changes tempo
+// only, never the reveal shape.
+export function applySpeed(bars: BarInstance[], speed: number): void {
+  const clampedSpeed = Math.min(MAX_SPEED, Math.max(MIN_SPEED, speed));
+  for (const b of bars) {
+    b.inDurationSec = REF_IN_DURATION_SEC / clampedSpeed;
+    b.outDurationSec = REF_OUT_DURATION_SEC / clampedSpeed;
   }
 }
 
@@ -198,6 +219,61 @@ export async function exportAlphaTemplate(opts: {
         else reject(new Error(`ffmpeg exited with code ${code}\n${stderr.slice(-2000)}`));
       });
     });
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+// Guardrail against an oversized spreadsheet accidentally spawning hundreds of ffmpeg processes.
+const MAX_BATCH_ROWS = 200;
+
+// e.g. row 3 "GPU & Performance Fixes" -> "003-gpu-performance-fixes". The index prefix keeps the
+// zip listing sorted/stable even with duplicate or near-empty names; the slug keeps it
+// human-identifiable, which is the actual point for an auditor matching files back to spreadsheet
+// rows.
+function slugForRow(index: number, text: string): string {
+  // \p{L}/\p{N} (Unicode letters/numbers) rather than an ASCII-only [a-z0-9]: a CJK product name
+  // would otherwise strip to nothing and every row would fall back to the same "row" filename,
+  // defeating the actual point of the slug for a non-English spreadsheet.
+  const slug = text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+  return `${String(index + 1).padStart(3, '0')}-${slug || 'row'}`;
+}
+
+/**
+ * Batch sibling to exportAlphaTemplate: one standalone alpha-template .mov per input string,
+ * zipped into a single download. Reuses exportAlphaTemplate as-is, in a loop -- no new encoder
+ * path. Rows render sequentially (not in parallel) to bound concurrent ffmpeg processes and keep
+ * onProgress a meaningful "N of M rows done" rather than an average of in-flight fractions.
+ */
+export async function exportAlphaBatch(opts: {
+  texts: string[];
+  outputZipPath: string;
+  speed?: number;
+  width?: number;
+  height?: number;
+  fps?: number;
+  onProgress?: (fractionDone: number) => void;
+}): Promise<void> {
+  if (opts.texts.length > MAX_BATCH_ROWS) {
+    throw new Error(`too many rows (max ${MAX_BATCH_ROWS})`);
+  }
+
+  const tmpDir = mkdtempSync(join(tmpdir(), 'superbar-batch-'));
+  try {
+    const filePaths: string[] = [];
+    for (let i = 0; i < opts.texts.length; i++) {
+      const bar = defaultBar(`row-${i}`, opts.texts[i], 0);
+      if (opts.speed != null) applySpeed([bar], opts.speed);
+      const filePath = join(tmpDir, `${slugForRow(i, opts.texts[i])}.mov`);
+      await exportAlphaTemplate({ bar, outputPath: filePath, width: opts.width, height: opts.height, fps: opts.fps });
+      filePaths.push(filePath);
+      opts.onProgress?.((i + 1) / opts.texts.length);
+    }
+    // zip appends/updates an existing archive rather than overwriting it (unlike ffmpeg's own -y),
+    // so a stale file at outputZipPath would otherwise leak old rows' entries into a fresh export.
+    rmSync(opts.outputZipPath, { force: true });
+    // -j: junk the tmpDir path, store files flat at the zip root.
+    execFileSync('zip', ['-j', '-q', opts.outputZipPath, ...filePaths]);
   } finally {
     rmSync(tmpDir, { recursive: true, force: true });
   }
