@@ -95,6 +95,51 @@ scripts/           <-- visual verification harnesses (the de-facto test suite)
 The browser preview runs the same `sampleBar` → `drawSuperBar`/`drawImportedBar` loop against a
 `<canvas>`, just without the ffmpeg muxing step.
 
+### Alpha-template export (no source video)
+
+`exportAlphaTemplate()` (`server/ffmpeg.ts`), a sibling to `exportVideo()`, exports the bar as a
+**standalone transparent template** for a video editor to drag onto their own Premiere timeline as
+an overlay — no uploaded video involved at all. It's reached via `POST /api/export` with
+`mode: 'alpha'` (default `mode` is `'burned'`, today's existing behavior, unchanged); alpha mode
+supports exactly one bar per export and ignores `uploadId` entirely.
+
+It reuses `renderBarFrames()` verbatim (no fork) and encodes the resulting PNG sequence directly —
+no `probeVideo`, no overlay filter, no audio map, since there's no base video to composite onto.
+Contract:
+
+- **ProRes 4444 in a `.mov`** (`-c:v prores_ks -profile:v 4 -pix_fmt yuva444p10le`), tagged
+  `bt709`. Confirmed against the bundled `ffmpeg-static` binary: `prores_ks` supports
+  `yuva444p10le` with a 16-bit alpha plane by default; the encoded bitstream reports as
+  `yuva444p12le` (ProRes 4444's native 12-bit precision — this is correct, not a mismatch with the
+  10-bit input pixel format requested).
+- **Straight (non-premultiplied) alpha.** PNG has no premultiplied-alpha mode, so every frame
+  `renderBarFrames()` writes is already straight alpha — nothing in this path composites those
+  frames over a black/matte background before encoding, so that property survives to the encoded
+  file untouched. This matters concretely: premultiplying against black would darken every
+  semi-transparent edge pixel (anti-aliased strokes, the finch marks' rounded corners) into a
+  visible black fringe once the file is dropped over bright footage. Verified directly by sampling
+  edge pixels at varying alpha in an exported frame — RGB stays constant (e.g. the little bird's
+  `~(250,213,117)` edge pixels read the same color at `alpha=42` as at `alpha=225`) instead of
+  darkening toward black as alpha drops.
+- **fps** must be one of `ALLOWED_ALPHA_FPS` (`23.976, 24, 25, 29.97, 30, 50, 59.94, 60`) — an
+  explicit allowlist so a typo'd fps fails loudly rather than producing a file with an unexpected
+  frame count.
+- **`speed`** (optional, on the `/api/export` request, applies to **both** modes): a tempo
+  multiplier clamped to `[0.5, 2.0]`. Maps to `inDurationSec = REF_IN / speed`,
+  `outDurationSec = REF_OUT / speed`, where `REF_IN`/`REF_OUT` are `defaultBar`'s own stock values
+  (`0.6`/`0.4`) reused directly rather than duplicated as separate constants. This **overrides**
+  whatever `inDurationSec`/`outDurationSec` a bar payload separately requested — an explicit
+  `speed` is authoritative, not just a fallback default. `holdSec` and the easings are untouched;
+  `sampleBar` (`shared/animate.ts`) normalizes elapsed time to `[0,1]` before easing, so scaling
+  these two durations changes tempo only, never the reveal *shape*.
+
+Verify with `scripts/test-alpha-export.ts` (direct-call harness, matches the `test-export.ts`
+pattern) — `ffprobe` the output for `profile=4444`/`codec_tag_string=ap4h`, and actually drop the
+sample onto bright footage in Premiere to eyeball edge fringing before trusting a change here.
+
+Out of scope for now, on purpose: multi-bar alpha compositing (several templates layered), a UI
+mode picker, CSV-driven batch generation. This path is backend-only until proven.
+
 ---
 
 ## The two background renderers

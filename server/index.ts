@@ -3,7 +3,7 @@ import multer from 'multer';
 import { mkdirSync, existsSync, createReadStream, statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
-import { probeVideo, exportVideo, type ExportFormat } from './ffmpeg.js';
+import { probeVideo, exportVideo, exportAlphaTemplate, type ExportFormat } from './ffmpeg.js';
 import { defaultBar, type BarInstance, type EasingName } from '../shared/animate.js';
 import type { ImportedArtPayload } from '../shared/importedArt.js';
 
@@ -64,16 +64,25 @@ function sanitizeBarId(raw: string | undefined, index: number): string {
   return safe.length > 0 ? safe : `bar-${index}`;
 }
 
+// Reference tempo the `speed` knob scales against -- reused from defaultBar's own stock values
+// rather than duplicated as separate magic numbers, so the two can never drift out of sync.
+const { inDurationSec: REF_IN_DURATION_SEC, outDurationSec: REF_OUT_DURATION_SEC } = defaultBar('__ref__', '', 0);
+const MIN_SPEED = 0.5;
+const MAX_SPEED = 2.0;
+
 app.post('/api/export', (req, res) => {
-  const { uploadId, bars: barsPayload, format, art } = req.body as {
-    uploadId: string;
+  const { uploadId, bars: barsPayload, format, art, mode, speed, width, height, fps } = req.body as {
+    uploadId?: string;
     bars: ExportBarPayload[];
     format: ExportFormat;
     art?: ImportedArtPayload;
+    mode?: 'burned' | 'alpha';
+    speed?: number;
+    width?: number;
+    height?: number;
+    fps?: number;
   };
 
-  const inputPath = `${UPLOAD_DIR}/${uploadId}`;
-  if (!existsSync(inputPath)) return res.status(404).json({ error: 'unknown uploadId' });
   if (!Array.isArray(barsPayload) || barsPayload.length === 0) {
     return res.status(400).json({ error: 'bars must be a non-empty array' });
   }
@@ -91,6 +100,63 @@ app.post('/api/export', (req, res) => {
     return b;
   });
 
+  // Motion-speed control: a bounded tempo multiplier, applied to BOTH export modes. Wins over
+  // whatever inDurationSec/outDurationSec a bar payload separately requested -- when a caller
+  // explicitly asks for a speed, that's the authoritative tempo, not just a fallback default.
+  // holdSec and the easings are untouched; sampleBar (shared/animate.ts) normalizes elapsed time
+  // to [0,1] before easing, so scaling these durations changes tempo only, never the reveal shape.
+  if (speed != null) {
+    const clampedSpeed = Math.min(MAX_SPEED, Math.max(MIN_SPEED, speed));
+    for (const b of bars) {
+      b.inDurationSec = REF_IN_DURATION_SEC / clampedSpeed;
+      b.outDurationSec = REF_OUT_DURATION_SEC / clampedSpeed;
+    }
+  }
+
+  const jobId = randomUUID();
+
+  if (mode === 'alpha') {
+    if (bars.length !== 1) {
+      return res.status(400).json({ error: 'alpha mode supports exactly one bar in this phase' });
+    }
+    const outputPath = `${OUTPUT_DIR}/${jobId}.mov`;
+    const job: Job = { progress: 0, done: false, error: null, outputPath, listeners: new Set() };
+    jobs.set(jobId, job);
+
+    exportAlphaTemplate({
+      bar: bars[0],
+      outputPath,
+      width,
+      height,
+      fps,
+      art,
+      onProgress: (f) => {
+        job.progress = f;
+        for (const listener of job.listeners) listener.write(`data: ${JSON.stringify({ progress: f })}\n\n`);
+      },
+    })
+      .then(() => {
+        job.done = true;
+        for (const listener of job.listeners) {
+          listener.write(`data: ${JSON.stringify({ progress: 1, done: true })}\n\n`);
+          listener.end();
+        }
+      })
+      .catch((err) => {
+        job.error = String(err.message || err);
+        for (const listener of job.listeners) {
+          listener.write(`data: ${JSON.stringify({ error: job.error })}\n\n`);
+          listener.end();
+        }
+      });
+
+    return res.json({ jobId });
+  }
+
+  // Default/'burned' mode -- unchanged behavior, still requires a real uploaded video.
+  const inputPath = `${UPLOAD_DIR}/${uploadId}`;
+  if (!uploadId || !existsSync(inputPath)) return res.status(404).json({ error: 'unknown uploadId' });
+
   // Defensive: the render engine composites every bar at the same fixed on-screen position
   // (overlay=0:0 per bar in server/ffmpeg.ts), so two visibly-overlapping bars would draw
   // directly on top of each other -- reject rather than silently produce a garbled export.
@@ -105,7 +171,6 @@ app.post('/api/export', (req, res) => {
     }
   }
 
-  const jobId = randomUUID();
   const ext = format === 'mp4' ? 'mp4' : 'mov';
   const outputPath = `${OUTPUT_DIR}/${jobId}.${ext}`;
   const job: Job = { progress: 0, done: false, error: null, outputPath, listeners: new Set() };
